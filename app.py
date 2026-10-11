@@ -10,6 +10,8 @@ from services.preprocessing import (
 )
 from services.prediction import predict_heatwave, classify_day, detect_heatwave_days
 from services.alerts import generate_alert
+from services.geo import load_district_geojson, match_district_names
+from services.theme import CUSTOM_CSS, PLOTLY_TEMPLATE_NAME, STATUS_COLORS, status_badge
 
 
 # ============================================================
@@ -28,62 +30,7 @@ st.set_page_config(
 # CUSTOM CSS
 # ============================================================
 
-st.markdown(
-    """
-    <style>
-
-    /* Main background */
-    .stApp {
-        background-color: #0f1117;
-    }
-
-    /* Sidebar */
-    section[data-testid="stSidebar"] {
-        background-color: #151922;
-    }
-
-    /* Main title */
-    .main-title {
-        font-size: 42px;
-        font-weight: 700;
-        margin-bottom: 5px;
-    }
-
-    .subtitle {
-        font-size: 18px;
-        color: #aeb4c0;
-        margin-bottom: 30px;
-    }
-
-    /* Metric cards */
-    div[data-testid="stMetric"] {
-        background-color: #171b25;
-        border: 1px solid #292f3b;
-        padding: 20px;
-        border-radius: 12px;
-    }
-
-    /* Section headings */
-    .section-title {
-        font-size: 24px;
-        font-weight: 600;
-        margin-top: 25px;
-        margin-bottom: 15px;
-    }
-
-    /* Status cards */
-    .status-card {
-        padding: 20px;
-        border-radius: 12px;
-        background-color: #171b25;
-        border: 1px solid #292f3b;
-        margin-bottom: 20px;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # ============================================================
@@ -158,6 +105,7 @@ page = st.sidebar.radio(
         "🔮 Prediction",
         "🚨 Alerts",
         "📍 District Analysis",
+        "🗺️ District Map",
         "📁 Dataset Explorer",
         "ℹ️ About"
     ]
@@ -270,7 +218,7 @@ if page == "🏠 Dashboard":
     )
 
     fig_temperature.update_layout(
-        template="plotly_dark",
+        template=PLOTLY_TEMPLATE_NAME,
         height=420
     )
 
@@ -305,7 +253,7 @@ if page == "🏠 Dashboard":
         )
 
         fig_heatwave.update_layout(
-            template="plotly_dark",
+            template=PLOTLY_TEMPLATE_NAME,
             height=350
         )
 
@@ -337,7 +285,7 @@ if page == "🏠 Dashboard":
         )
 
         fig_district.update_layout(
-            template="plotly_dark",
+            template=PLOTLY_TEMPLATE_NAME,
             height=350
         )
 
@@ -458,7 +406,7 @@ elif page == "📊 Analytics":
         )
 
         fig.update_layout(
-            template="plotly_dark",
+            template=PLOTLY_TEMPLATE_NAME,
             height=450
         )
 
@@ -562,19 +510,21 @@ elif page == "🚨 Alerts":
         unsafe_allow_html=True
     )
 
-    for _, row in latest_per_district.iterrows():
-        message = generate_alert(
-            row["DAY_CLASS"],
-            district=row["DISTRICT"],
-            date=latest_date.strftime("%d %b %Y")
-        )
+    status_label_map = {0: "Normal", 1: "Heatwave", 2: "Severe Heatwave"}
 
-        if row["DAY_CLASS"] == 2:
-            st.error(message)
-        elif row["DAY_CLASS"] == 1:
-            st.warning(message)
-        else:
-            st.success(message)
+    for _, row in latest_per_district.iterrows():
+        status_label = status_label_map[row["DAY_CLASS"]]
+
+        col1, col2, col3 = st.columns([3, 2, 2])
+
+        with col1:
+            st.write(f"**{row['DISTRICT']}**")
+
+        with col2:
+            st.write(f"{row['TMAX']:.1f} °C")
+
+        with col3:
+            st.markdown(status_badge(status_label), unsafe_allow_html=True)
 
 
 # ============================================================
@@ -633,7 +583,7 @@ elif page == "📍 District Analysis":
     )
 
     fig.update_layout(
-        template="plotly_dark",
+        template=PLOTLY_TEMPLATE_NAME,
         height=420
     )
 
@@ -641,6 +591,113 @@ elif page == "📍 District Analysis":
         fig,
         use_container_width=True
     )
+
+
+# ============================================================
+# DISTRICT MAP
+# ============================================================
+
+elif page == "🗺️ District Map":
+
+    st.title("🗺️ District Map")
+
+    GEOJSON_PATH = "data/rajasthan_districts.geojson"
+
+    @st.cache_data
+    def get_geojson_and_matches(path, district_names):
+        geojson = load_district_geojson(path)
+        matched, unmatched = match_district_names(district_names, geojson)
+        return geojson, matched, unmatched
+
+    try:
+        rajasthan_geojson, matched, unmatched = get_geojson_and_matches(
+            GEOJSON_PATH, tuple(sorted(df["DISTRICT"].unique()))
+        )
+    except FileNotFoundError:
+        st.error(
+            f"District boundary file not found at `{GEOJSON_PATH}`. "
+            "Download it and place it there — see the setup note below."
+        )
+        st.code(
+            'curl -sL -o data/rajasthan_districts.geojson '
+            '"https://raw.githubusercontent.com/shuklaneerajdev/'
+            'IndiaStateTopojsonFiles/master/Rajasthan.geojson"',
+            language="bash"
+        )
+        st.stop()
+
+    if unmatched:
+        st.warning(
+            f"{len(unmatched)} district name(s) in your dataset didn't "
+            f"match the map boundaries and won't be shaded: "
+            f"{', '.join(unmatched)}"
+        )
+
+    df["GEO_DISTRICT"] = df["DISTRICT"].map(matched)
+
+    map_view = st.radio(
+        "Show on map",
+        ["Current status (latest date)", "Total heatwave days (all-time)"],
+        horizontal=True
+    )
+
+    if map_view == "Current status (latest date)":
+
+        map_data = (
+            df[df["DATE"] == df["DATE"].max()]
+            .dropna(subset=["GEO_DISTRICT"])
+            .copy()
+        )
+        map_data["STATUS"] = map_data["DAY_CLASS"].map(
+            {0: "Normal", 1: "Heatwave", 2: "Severe Heatwave"}
+        )
+
+        fig = px.choropleth(
+            map_data,
+            geojson=rajasthan_geojson,
+            locations="GEO_DISTRICT",
+            featureidkey="properties.Dist_Name",
+            color="STATUS",
+            color_discrete_map=STATUS_COLORS,
+            category_orders={"STATUS": ["Normal", "Heatwave", "Severe Heatwave"]},
+            hover_name="DISTRICT",
+            hover_data={
+                "TMAX": ":.1f",
+                "NORMAL_TMAX": ":.1f",
+                "GEO_DISTRICT": False,
+                "STATUS": False,
+            },
+            title=f"Heatwave Status — {latest_date.strftime('%d %B %Y')}"
+        )
+
+    else:
+
+        map_data = (
+            df.dropna(subset=["GEO_DISTRICT"])
+            .groupby(["DISTRICT", "GEO_DISTRICT"], as_index=False)["HEATWAVE_PREDICTED"]
+            .sum()
+        )
+
+        fig = px.choropleth(
+            map_data,
+            geojson=rajasthan_geojson,
+            locations="GEO_DISTRICT",
+            featureidkey="properties.Dist_Name",
+            color="HEATWAVE_PREDICTED",
+            color_continuous_scale="OrRd",
+            hover_name="DISTRICT",
+            hover_data={"GEO_DISTRICT": False},
+            title="Total Heatwave Days (2006–2025)"
+        )
+
+    fig.update_geos(fitbounds="locations", visible=False)
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE_NAME,
+        height=600,
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # ============================================================

@@ -4,9 +4,22 @@ import numpy as np
 
 def load_dataset(file_path):
     """
-    Load the dataset from a CSV file.
+    Load the dataset from CSV and convert
+    temperature values from Kelvin to Celsius.
     """
-    df = pd.read_csv("/Users/tanishalohiya/stqa/Heatwave-Monitoring-System/data/Rajasthan_Heatwave_2006_2025.csv")
+    df = pd.read_csv(file_path)
+
+    temperature_cols = [
+        "TEMP2M",
+        "TMAX",
+        "TMIN",
+        "DEW2M"
+    ]
+
+    for col in temperature_cols:
+        if col in df.columns:
+            df[col] = df[col] - 273.15
+
     return df
 
 
