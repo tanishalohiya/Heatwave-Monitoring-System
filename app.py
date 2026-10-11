@@ -424,62 +424,203 @@ elif page == "🔮 Prediction":
 
     st.title("🔮 Heatwave Prediction")
 
-    st.write(
-        "Enter the expected maximum temperature to evaluate "
-        "the heatwave condition. Optionally provide the "
-        "district's normal temperature for that date to use "
-        "the departure-based IMD criteria instead of a flat "
-        "absolute threshold."
+    prediction_mode = st.radio(
+        "Choose prediction method",
+        ["Rule-Based (IMD-style)", "DNN Model"],
+        horizontal=True
     )
 
-    col1, col2 = st.columns(2)
+    if prediction_mode == "Rule-Based (IMD-style)":
 
-    with col1:
-        temperature = st.number_input(
-            "Maximum Temperature (°C)",
-            min_value=-10.0,
-            max_value=60.0,
-            value=40.0,
-            step=0.5
+        st.write(
+            "Evaluate a maximum temperature using the existing "
+            "IMD-style absolute or normal-temperature departure criteria."
         )
 
-    with col2:
-        use_normal = st.checkbox("Use normal-temperature departure")
-        normal_temperature = None
-        if use_normal:
-            normal_temperature = st.number_input(
-                "Normal Temperature for this date/district (°C)",
+        col1, col2 = st.columns(2)
+
+        with col1:
+            temperature = st.number_input(
+                "Maximum Temperature (°C)",
                 min_value=-10.0,
-                max_value=55.0,
-                value=38.0,
+                max_value=60.0,
+                value=40.0,
                 step=0.5
             )
 
-    if st.button("Run Prediction", type="primary"):
+        with col2:
+            use_normal = st.checkbox("Use normal-temperature departure")
+            normal_temperature = None
 
-        day_class = classify_day(temperature, normal_temperature)
+            if use_normal:
+                normal_temperature = st.number_input(
+                    "Normal Temperature for this date/district (°C)",
+                    min_value=-10.0,
+                    max_value=55.0,
+                    value=38.0,
+                    step=0.5
+                )
 
-        st.markdown("---")
+        if st.button("Run Prediction", type="primary", key="rule_prediction"):
 
-        if day_class == 2:
-            st.error("🔴 SEVERE HEATWAVE CONDITION")
-            st.write(
-                "This single day meets the severe heatwave criteria. "
-                "Note: an official heatwave declaration also requires "
-                "this condition to persist for at least 2 consecutive days."
+            day_class = classify_day(temperature, normal_temperature)
+
+            st.markdown("---")
+
+            if day_class == 2:
+                st.error("🔴 SEVERE HEATWAVE CONDITION")
+                st.write(
+                    "This single day meets the severe heatwave criteria. "
+                    "An official declaration also depends on persistence "
+                    "for at least two consecutive days."
+                )
+            elif day_class == 1:
+                st.error("🔥 HEATWAVE CONDITION")
+                st.write(
+                    "This single day meets the heatwave criteria. "
+                    "An official declaration also depends on persistence "
+                    "for at least two consecutive days."
+                )
+            else:
+                st.success("✅ NORMAL CONDITION")
+                st.write(
+                    "The entered temperature is below the configured "
+                    "heatwave threshold."
+                )
+
+    else:
+        st.write(
+            "The trained DNN classifies historical weather observations "
+            "using 20 weather and location features. It does not currently "
+            "forecast future weather."
+        )
+
+        try:
+            from services.dnn_prediction import predict_dnn
+
+            # Use the already-loaded and temperature-converted dataset.
+            dnn_df = df.copy()
+
+            required_features = [
+                "MONTH", "DAY", "WIND_U10", "WIND_V10", "MSLP",
+                "BLH", "GEOP", "TEMP2M", "TMAX", "TMIN", "DEW2M",
+                "CLOUD", "RAIN", "SRAD", "EVAP", "SOILT1",
+                "SOILM1", "LAI", "LAT", "LON"
+            ]
+
+            required_columns = required_features + ["YEAR", "DISTRICT"]
+
+            missing_columns = [
+                column for column in required_columns
+                if column not in dnn_df.columns
+            ]
+
+            if missing_columns:
+                st.error(
+                    "The dataset is missing required columns: "
+                    + ", ".join(missing_columns)
+                )
+            else:
+                districts = sorted(
+                    dnn_df["DISTRICT"].dropna().unique().tolist()
+                )
+                selected_district = st.selectbox(
+                    "Select district",
+                    districts,
+                    key="dnn_district"
+                )
+
+                district_df = dnn_df[
+                    dnn_df["DISTRICT"] == selected_district
+                ].copy()
+
+                district_df["RECORD_DATE"] = pd.to_datetime(
+                    dict(
+                        year=district_df["YEAR"],
+                        month=district_df["MONTH"],
+                        day=district_df["DAY"]
+                    ),
+                    errors="coerce"
+                )
+
+                district_df = district_df.dropna(subset=["RECORD_DATE"])
+
+                dates = sorted(
+                    district_df["RECORD_DATE"].unique(),
+                    reverse=True
+                )
+
+                if not dates:
+                    st.warning("No dated records are available for this district.")
+                else:
+                    selected_date = st.selectbox(
+                        "Select historical date",
+                        dates,
+                        format_func=lambda value: pd.Timestamp(value).strftime(
+                            "%d %B %Y"
+                        ),
+                        key="dnn_date"
+                    )
+
+                    selected_row = district_df[
+                        district_df["RECORD_DATE"] == selected_date
+                    ]
+
+                    if selected_row.empty:
+                        st.warning("No record was found for that date.")
+                    else:
+                        record = selected_row.iloc[0]
+
+                        st.caption(
+                            "Selected record: "
+                            f"{selected_district}, "
+                            f"{pd.Timestamp(selected_date).strftime('%d %B %Y')}"
+                        )
+
+                        if st.button(
+                            "Classify Historical Record",
+                            type="primary",
+                            key="dnn_prediction"
+                        ):
+                            weather_data = record[required_features].to_dict()
+                            result = predict_dnn(weather_data)
+
+                            probability = result["probability"]
+                            prediction = result["prediction"]
+
+                            st.markdown("---")
+                            st.metric(
+                                "DNN Heatwave Probability",
+                                f"{probability:.2%}"
+                            )
+
+                            if prediction == 1:
+                                st.error("🔥 DNN CLASSIFICATION: HEATWAVE")
+                            else:
+                                st.success(
+                                    "✅ DNN CLASSIFICATION: NO HEATWAVE"
+                                )
+
+                            st.caption(
+                                f"Classification threshold: "
+                                f"{result['threshold']:.2f}"
+                            )
+
+                            if "HEATWAVE" in record.index:
+                                st.write(
+                                    "Dataset label:",
+                                    int(record["HEATWAVE"])
+                                )
+
+        except FileNotFoundError as exc:
+            st.error(str(exc))
+        except ImportError as exc:
+            st.error(
+                "Unable to import the DNN dependencies. "
+                f"Check the environment: {exc}"
             )
-        elif day_class == 1:
-            st.error("🔥 HEATWAVE CONDITION")
-            st.write(
-                "This single day meets the heatwave criteria. "
-                "Note: an official heatwave declaration also requires "
-                "this condition to persist for at least 2 consecutive days."
-            )
-        else:
-            st.success("✅ NORMAL CONDITION")
-            st.write(
-                "The entered temperature is below the heatwave threshold."
-            )
+        except Exception as exc:
+            st.error(f"DNN classification failed: {exc}")
 
 
 # ============================================================

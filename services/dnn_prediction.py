@@ -60,6 +60,9 @@ def predict_dnn(weather_data):
             "weather_data must be a dictionary or pandas DataFrame."
         )
 
+    if input_df.empty:
+        raise ValueError("At least one weather record is required.")
+
     missing = [feature for feature in features if feature not in input_df.columns]
     if missing:
         raise ValueError(
