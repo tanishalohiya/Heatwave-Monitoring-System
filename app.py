@@ -416,6 +416,83 @@ elif page == "📊 Analytics":
         )
 
 
+
+        
+        # MODEL COMPARISON — LAB CLASSIFIERS
+        st.markdown("---")
+        st.subheader("🤖 ML Classifier Comparison")
+        st.caption(
+            "Models are evaluated for the selected district and year. "
+            "TMAX is excluded to reduce feature leakage."
+        )
+
+        if st.button("Run ML Model Comparison", key="run_ml_comparison"):
+            try:
+                with st.spinner("Evaluating classifiers..."):
+                    from services.ml_comparison import evaluate_comparison
+
+                    ml_results, _, _, evaluated_years = evaluate_comparison(
+                        district=selected_district,
+                        test_year=selected_year,
+                    )
+
+                st.success(
+                    f"Results for {selected_district} — "
+                    f"{int(selected_year)}"
+                )
+
+                st.dataframe(
+                    ml_results.style.format({
+                        "Accuracy": "{:.2%}",
+                        "Precision": "{:.2%}",
+                        "Recall": "{:.2%}",
+                        "F1 Score": "{:.2%}",
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                import plotly.express as px
+
+                score_columns = [
+                    "Accuracy", "Precision", "Recall", "F1 Score"
+                ]
+                score_data = ml_results.melt(
+                    id_vars="Model",
+                    value_vars=score_columns,
+                    var_name="Metric",
+                    value_name="Score",
+                )
+
+                comparison_fig = px.bar(
+                    score_data,
+                    x="Model",
+                    y="Score",
+                    color="Metric",
+                    barmode="group",
+                    title=(
+                        f"Classifier Performance — "
+                        f"{selected_district}, {int(selected_year)}"
+                    ),
+                    range_y=[0, 1],
+                )
+                comparison_fig.update_layout(
+                    template=PLOTLY_TEMPLATE_NAME,
+                    height=420,
+                )
+                st.plotly_chart(
+                    comparison_fig,
+                    use_container_width=True,
+                )
+
+            except ValueError as error:
+                st.warning(
+                    f"Cannot evaluate this district and year: {error}"
+                )
+            except Exception as error:
+                st.error(f"Model evaluation failed: {error}")
+
+
 # ============================================================
 # PREDICTION
 # ============================================================
@@ -621,6 +698,103 @@ elif page == "🔮 Prediction":
             )
         except Exception as exc:
             st.error(f"DNN classification failed: {exc}")
+
+
+
+
+
+    # ML CLASSIFIER — PREDICTION PAGE
+    st.markdown("---")
+    st.subheader("🤖 ML Classifier")
+    st.caption(
+        "Classify a historical weather observation with Decision Tree, "
+        "Naive Bayes or SVM. TMAX is excluded from model features."
+    )
+
+    if st.button("Load ML Classifiers", key="prediction_load_ml"):
+        with st.spinner("Training classifiers..."):
+            try:
+                from services.ml_comparison import evaluate_comparison
+                _, fitted_models, _, held_out_years = evaluate_comparison()
+                st.session_state["prediction_ml_models"] = fitted_models
+                st.success(
+                    "Classifiers loaded. Evaluation years: "
+                    + ", ".join(str(int(y)) for y in held_out_years)
+                )
+            except Exception as exc:
+                st.error(f"Could not load classifiers: {exc}")
+
+    if "prediction_ml_models" in st.session_state:
+        ml_features = [
+            "MONTH", "DAY", "WIND_U10", "WIND_V10", "MSLP",
+            "BLH", "GEOP", "TEMP2M", "TMIN", "DEW2M",
+            "CLOUD", "RAIN", "SRAD", "EVAP", "SOILT1",
+            "SOILM1", "LAI", "LAT", "LON"
+        ]
+
+        missing_features = [f for f in ml_features if f not in df.columns]
+
+        if missing_features:
+            st.error("Missing features: " + ", ".join(missing_features))
+        else:
+            ml_district = st.selectbox(
+                "Select district for ML classification",
+                sorted(df["DISTRICT"].dropna().unique()),
+                key="prediction_ml_district"
+            )
+
+            ml_rows = df[df["DISTRICT"] == ml_district].copy()
+            ml_rows["ML_DATE"] = pd.to_datetime(
+                dict(
+                    year=ml_rows["YEAR"],
+                    month=ml_rows["MONTH"],
+                    day=ml_rows["DAY"]
+                ),
+                errors="coerce"
+            )
+            ml_rows = ml_rows.dropna(subset=["ML_DATE"])
+            ml_dates = sorted(ml_rows["ML_DATE"].unique(), reverse=True)
+
+            if not ml_dates:
+                st.warning("No historical observations available.")
+            else:
+                ml_date = st.selectbox(
+                    "Select historical date",
+                    ml_dates,
+                    format_func=lambda value: pd.Timestamp(value).strftime(
+                        "%d %B %Y"
+                    ),
+                    key="prediction_ml_date"
+                )
+
+                ml_model_name = st.selectbox(
+                    "Select classifier",
+                    ["Decision Tree", "Naive Bayes", "SVM"],
+                    key="prediction_ml_model"
+                )
+
+                if st.button(
+                    "Classify Observation",
+                    type="primary",
+                    key="prediction_run_ml"
+                ):
+                    ml_record = ml_rows[ml_rows["ML_DATE"] == ml_date].iloc[0]
+                    ml_input = ml_record[ml_features].to_frame().T
+                    ml_prediction = int(
+                        st.session_state["prediction_ml_models"][
+                            ml_model_name
+                        ].predict(ml_input)[0]
+                    )
+
+                    if ml_prediction == 1:
+                        st.error("🔥 ML CLASSIFICATION: HEATWAVE")
+                    else:
+                        st.success("✅ ML CLASSIFICATION: NO HEATWAVE")
+
+                    st.caption(
+                        "This classifies a historical observation; "
+                        "it does not forecast future weather."
+                    )
 
 
 # ============================================================
